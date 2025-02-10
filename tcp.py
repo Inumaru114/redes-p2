@@ -71,18 +71,19 @@ class Conexao:
         print('Este é um exemplo de como fazer um timer')
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
-        if (seq_no != self.ack_no):
+        if (seq_no != self.ack_no) and len(payload) != 0:
 
             return
         else :
             self.ack_no = seq_no + len(payload)
 
-            src_port = self.id_conexao[1]
-            dst_port = self.id_conexao[3]
-            header = make_header(dst_port, src_port, self.seq_no, self.ack_no, FLAGS_ACK)
-            src_address = self.id_conexao[2]
-            dst_address = self.id_conexao[0]
-            self.servidor.rede.enviar(fix_checksum(header, src_address, dst_address), src_address)
+            if (len(payload) != 0) or (flags & FLAGS_SYN) or (flags & FLAGS_FIN):
+                src_port = self.id_conexao[1]
+                dst_port = self.id_conexao[3]
+                header = make_header(dst_port, src_port, self.seq_no, self.ack_no, FLAGS_ACK)
+                src_address = self.id_conexao[2]
+                dst_address = self.id_conexao[0]
+                self.servidor.rede.enviar(fix_checksum(header, src_address, dst_address), src_address)
 
             self.callback(self, payload)
 
@@ -103,8 +104,32 @@ class Conexao:
         Usado pela camada de aplicação para enviar dados
         """
         # TODO: implemente aqui o envio de dados.
-        # Chame self.servidor.rede.enviar(segmento, dest_addr) para enviar o segmento
-        # que você construir para a camada de rede.
+
+        src_port, dst_port, seq_no, ack_no, flags, window_size, checksum, urg_ptr = read_header(dados)
+
+        if (flags& FLAGS_ACK == FLAGS_ACK):
+            return
+        
+        data_length = len(dados)
+        bytes_sent = 0
+
+        src_port = self.id_conexao[1]
+        dst_port = self.id_conexao[3]
+
+        src_address = self.id_conexao[2]
+        dst_address = self.id_conexao[0]
+
+        if (bytes_sent < data_length) :
+            while (bytes_sent < data_length) :
+                segment_size = min(MSS, data_length - bytes_sent)
+                segment_data = dados[bytes_sent: bytes_sent + segment_size]
+                header = make_header(dst_port, src_port, self.seq_no + 1, self.ack_no, FLAGS_ACK)
+                self.servidor.rede.enviar(fix_checksum(header + segment_data + src_address, dst_address), dst_address)
+
+                self.seq_no = self.seq_no + segment_size
+                bytes_sent += segment_size
+
+
         pass
 
     def fechar(self):
