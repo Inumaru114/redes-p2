@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from tcputils import *
 
 
@@ -65,14 +66,18 @@ class Conexao:
         self.seq_no = seq_no
         self.callback = None
         self.still_waiting = []
-        self.timer = asyncio.get_event_loop().call_later(1, self._exemplo_timer)  # um timer pode ser criado assim; esta linha é só um exemplo e pode ser removida
+        self.timer = None
+        self.timeout_interval = 5
+        self.devRTT = 0
+        self.estimatedRTT = 0
         #self.timer.cancel()   # é possível cancelar o timer chamando esse método; esta linha é só um exemplo e pode ser removida
 
     def _exemplo_timer(self):
 
         if(len(self.still_waiting)):
+            self.still_waiting[0][2] = 0
             self.servidor.rede.enviar(self.still_waiting[0][0], self.still_waiting[0][1])
-            self.timer = asyncio.get_event_loop().call_later(1, self._exemplo_timer)
+            self.timer = asyncio.get_event_loop().call_later(self.timeout_interval, self._exemplo_timer)
 
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
@@ -80,8 +85,19 @@ class Conexao:
         if ((seq_no > self.ack_no - 1) and (flags & FLAGS_ACK == FLAGS_ACK) and len(self.still_waiting) > 0):
             if  (self.timer is not None):
                 self.timer.cancel()
+
+                if (self.still_waiting[0][2] != 0):
+                    rtt = time.time() - self.still_waiting[0][2]
+                    if((self.devRTT == 0) and (self.estimatedRTT ==0)):
+                        self.estimatedRTT = rtt
+                        self.devRTT = rtt/2
+                    else :
+                        self.estimatedRTT = (1 - 0.125) * self.estimatedRTT + 0.125 * rtt
+                        self.devRTT = (1 - 0.25) * self.devRTT + 0.25 * abs(rtt - self.estimatedRTT)
+                    self.timeout_interval = self.estimatedRTT + 4 * self.devRTT
+
                 self.still_waiting.pop(0)
-            self.timer = asyncio.get_event_loop().call_later(1, self.timer)
+            self.timer = asyncio.get_event_loop().call_later(self.timeout_interval, self.timer)
 
         if ((seq_no != self.ack_no) and len(payload) != 0):
             return
@@ -126,7 +142,7 @@ class Conexao:
                 segment_size = min(MSS, data_length - bytes_sent)
                 segment_data = dados[bytes_sent: bytes_sent + segment_size]
                 header = make_header(dst_port, src_port, self.seq_no + 1, self.ack_no, FLAGS_ACK)
-                message = [fix_checksum(header + segment_data , src_address, dst_address), src_address]
+                message = [fix_checksum(header + segment_data , src_address, dst_address), src_address, time.time()]
                 self.servidor.rede.enviar(message[0], message[1])
 
                 self.servidor.rede.enviar(fix_checksum(header + segment_data + src_address, dst_address), dst_address)
@@ -134,7 +150,7 @@ class Conexao:
                 self.seq_no = self.seq_no + segment_size
                 bytes_sent += segment_size
                 self.still_waiting.append(message)
-                self.timer = asyncio.get_event_loop().call_later(1, self._exemplo_timer)
+                self.timer = asyncio.get_event_loop().call_later(self.timeout_interval, self._exemplo_timer)
 
 
         pass
