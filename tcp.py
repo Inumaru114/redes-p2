@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+import math
 from tcputils import *
 
 
@@ -57,8 +58,6 @@ class Servidor:
             print('%s:%d -> %s:%d (pacote associado a conexão desconhecida)' %
                   (src_addr, src_port, dst_addr, dst_port))
 
-def redefineAddress(id_conexao):
-    return id_conexao[0],id_conexao[1],id_conexao[2],id_conexao[3],
 class Conexao:
     def __init__(self, servidor, id_conexao, seq_no):
         self.servidor = servidor
@@ -70,14 +69,25 @@ class Conexao:
         self.timeout_interval = 5
         self.devRTT = 0
         self.estimatedRTT = 0
+        self.window = 1
+        self.send_line = []
         #self.timer.cancel()   # é possível cancelar o timer chamando esse método; esta linha é só um exemplo e pode ser removida
+
+    def redefineAddress(id_conexao):
+        return id_conexao[0],id_conexao[1],id_conexao[2],id_conexao[3],
 
     def _exemplo_timer(self):
 
         if(len(self.still_waiting)):
             self.still_waiting[0][2] = 0
+            self.window = math.ceil(self.window/2)
             self.servidor.rede.enviar(self.still_waiting[0][0], self.still_waiting[0][1])
             self.timer = asyncio.get_event_loop().call_later(self.timeout_interval, self._exemplo_timer)
+
+            if (self.timer is not None):
+                self.timer.cancel()
+            else:
+                self.timer = asyncio.get_event_loop().call_later(self.timer_value, self._exemplo_timer)
 
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
@@ -87,6 +97,8 @@ class Conexao:
                 self.timer.cancel()
 
                 if (self.still_waiting[0][2] != 0):
+                    if (self.still_waiting[0][3] == MSS):
+                        self.window = self.window + 1
                     rtt = time.time() - self.still_waiting[0][2]
                     if((self.devRTT == 0) and (self.estimatedRTT ==0)):
                         self.estimatedRTT = rtt
@@ -97,6 +109,7 @@ class Conexao:
                     self.timeout_interval = self.estimatedRTT + 4 * self.devRTT
 
                 self.still_waiting.pop(0)
+                self.autoenviar()
             self.timer = asyncio.get_event_loop().call_later(self.timeout_interval, self.timer)
 
         if ((seq_no != self.ack_no) and len(payload) != 0):
@@ -105,7 +118,7 @@ class Conexao:
             self.ack_no = seq_no + len(payload)
 
             if (len(payload) != 0) or (flags & FLAGS_SYN) or (flags & FLAGS_FIN):
-                dst_address, src_port, src_address, dst_port = redefineAddress(self.id_conexao)
+                dst_address, src_port, src_address, dst_port = self.redefineAddress(self.id_conexao)
                 header = make_header(dst_port, src_port, self.seq_no, self.ack_no, FLAGS_ACK)
                 self.servidor.rede.enviar(fix_checksum(header, src_address, dst_address), src_address)
 
@@ -135,14 +148,14 @@ class Conexao:
         data_length = len(dados)
         bytes_sent = 0
         
-        dst_address, src_port, src_address, dst_port = redefineAddress(self.id_conexao)
+        dst_address, src_port, src_address, dst_port = self.redefineAddress(self.id_conexao)
 
         if (bytes_sent < data_length) :
             while (bytes_sent < data_length) :
                 segment_size = min(MSS, data_length - bytes_sent)
                 segment_data = dados[bytes_sent: bytes_sent + segment_size]
                 header = make_header(dst_port, src_port, self.seq_no + 1, self.ack_no, FLAGS_ACK)
-                message = [fix_checksum(header + segment_data , src_address, dst_address), src_address, time.time()]
+                message = [fix_checksum(header + segment_data , src_address, dst_address), src_address, time.time(), segment_size]
                 self.servidor.rede.enviar(message[0], message[1])
 
                 self.servidor.rede.enviar(fix_checksum(header + segment_data + src_address, dst_address), dst_address)
@@ -152,6 +165,9 @@ class Conexao:
                 self.still_waiting.append(message)
                 self.timer = asyncio.get_event_loop().call_later(self.timeout_interval, self._exemplo_timer)
 
+                self.send_line.append(message)
+            
+            self.autoenviar()
 
         pass
 
@@ -160,10 +176,21 @@ class Conexao:
         Usado pela camada de aplicação para fechar a conexão
         """
     
-        dst_address, src_port, src_address, dst_port = redefineAddress(self.id_conexao)
+        dst_address, src_port, src_address, dst_port = self.redefineAddress(self.id_conexao)
         header = make_header(dst_port, src_port, self.seq_no + 1, self.ack_no, FLAGS_FIN)
         self.servidor.rede.enviar(fix_checksum(header, src_address, dst_address), src_address)
 
+        pass
+
+    def autoenviar(self):
+        for i in range(self.window - len(self.still_waiting)):
+            if (len(self.send_line) > 0):
+                msg = self.send_line.pop(0)
+                self.still_waiting.append(msg)
+                self.servidor.rede.enviar(msg[0], msg[1])
+
+        if (len(self.still_waiting) > 0):
+            self.timer = asyncio.get_event_loop().call_later(self.timer_value, self._exemplo_timer)
         pass
 
 
