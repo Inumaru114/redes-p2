@@ -64,17 +64,26 @@ class Conexao:
         self.id_conexao = id_conexao
         self.seq_no = seq_no
         self.callback = None
+        self.still_waiting = []
         self.timer = asyncio.get_event_loop().call_later(1, self._exemplo_timer)  # um timer pode ser criado assim; esta linha é só um exemplo e pode ser removida
         #self.timer.cancel()   # é possível cancelar o timer chamando esse método; esta linha é só um exemplo e pode ser removida
 
     def _exemplo_timer(self):
-        # Esta função é só um exemplo e pode ser removida
-        print('Este é um exemplo de como fazer um timer')
+
+        if(len(self.still_waiting)):
+            self.servidor.rede.enviar(self.still_waiting[0][0], self.still_waiting[0][1])
+            self.timer = asyncio.get_event_loop().call_later(1, self._exemplo_timer)
 
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
-        if (seq_no != self.ack_no) and len(payload) != 0:
 
+        if ((seq_no > self.ack_no - 1) and (flags & FLAGS_ACK == FLAGS_ACK) and len(self.still_waiting) > 0):
+            if  (self.timer is not None):
+                self.timer.cancel()
+                self.still_waiting.pop(0)
+            self.timer = asyncio.get_event_loop().call_later(1, self.timer)
+
+        if ((seq_no != self.ack_no) and len(payload) != 0):
             return
         else :
             self.ack_no = seq_no + len(payload)
@@ -117,10 +126,15 @@ class Conexao:
                 segment_size = min(MSS, data_length - bytes_sent)
                 segment_data = dados[bytes_sent: bytes_sent + segment_size]
                 header = make_header(dst_port, src_port, self.seq_no + 1, self.ack_no, FLAGS_ACK)
+                message = [fix_checksum(header + segment_data , src_address, dst_address), src_address]
+                self.servidor.rede.enviar(message[0], message[1])
+
                 self.servidor.rede.enviar(fix_checksum(header + segment_data + src_address, dst_address), dst_address)
 
                 self.seq_no = self.seq_no + segment_size
                 bytes_sent += segment_size
+                self.still_waiting.append(message)
+                self.timer = asyncio.get_event_loop().call_later(1, self._exemplo_timer)
 
 
         pass
